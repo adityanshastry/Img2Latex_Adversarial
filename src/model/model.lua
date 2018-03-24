@@ -939,3 +939,384 @@ function model:shutdown()
         self.visualize_attn_file:close()
     end
 end
+
+-- one adversarial step
+function model:adversarial_step(batch, forward_only, beam_size, trie)
+    if forward_only then
+        self.val_batch_size = self.batch_size
+        beam_size = beam_size or 1 -- default argmax
+        beam_size = math.min(beam_size, self.target_vocab_size)
+        if not self.init_beam then
+            self.init_beam = true
+            local beam_decoder_h_init = localize(torch.zeros(self.val_batch_size*beam_size, self.decoder_num_hidden))
+            self.beam_scores = localize(torch.zeros(self.val_batch_size, beam_size))
+            self.current_indices_history = {}
+            self.beam_parents_history = {}
+            self.beam_init_fwd_dec = {}
+            if self.input_feed then
+                table.insert(self.beam_init_fwd_dec, beam_decoder_h_init:clone())
+            end
+            for L = 1, self.decoder_num_layers do
+                table.insert(self.beam_init_fwd_dec, beam_decoder_h_init:clone()) -- memory cell
+                table.insert(self.beam_init_fwd_dec, beam_decoder_h_init:clone()) -- hidden state
+            end
+            self.trie_locations = {}
+        else
+            self.beam_scores:zero()
+            self.current_indices_history = {}
+            self.beam_parents_history = {}
+            self.trie_locations = {}
+        end
+    end
+    local input_batch = localize(batch[1])
+    local target_batch = localize(batch[2])
+    local target_eval_batch = localize(batch[3])
+    local num_nonzeros = batch[4]
+    local img_paths
+    if self.visualize then
+        img_paths = batch[5]
+    end
+
+    local batch_size = input_batch:size()[1]
+    local target_l = target_batch:size()[2]
+
+    assert(target_l <= self.max_decoder_l, string.format('max_decoder_l (%d) < target_l (%d)!', self.max_decoder_l, target_l))
+    -- if forward only, then re-generate the target batch
+    if forward_only then
+        local target_batch_new = localize(torch.IntTensor(batch_size, self.max_decoder_l)):fill(1)
+        target_batch_new[{{1,batch_size}, {1,target_l}}]:copy(target_batch)
+        target_batch = target_batch_new
+        local target_eval_batch_new = localize(torch.IntTensor(batch_size, self.max_decoder_l)):fill(1)
+        target_eval_batch_new[{{1,batch_size}, {1,target_l}}]:copy(target_eval_batch)
+        target_eval_batch = target_eval_batch_new
+        target_l = self.max_decoder_l
+        self.cnn_model:evaluate()
+        --self.cnn_model:training()
+        self.output_projector:evaluate()
+
+    end
+
+    local feval = function(p) --cut off when evaluate
+        target = target_batch:transpose(1,2)
+        target_eval = target_eval_batch:transpose(1,2)
+        local cnn_output_list = self.cnn_model:forward(input_batch) -- list of (batch_size, W, 512)
+        local counter = 1
+        local imgH = #cnn_output_list
+        local source_l = cnn_output_list[1]:size()[2]
+        local context = self.context_proto[{{1, batch_size}, {1, source_l*imgH}}]
+        assert(source_l <= self.max_encoder_l_w, string.format('max_encoder_l_w (%d) < source_l (%d)!', self.max_encoder_l_w, source_l))
+        for i = 1, imgH do
+            if forward_only then
+                self.pos_embedding_fw:evaluate()
+                self.pos_embedding_bw:evaluate()
+            end
+            local pos = localize(torch.zeros(batch_size)):fill(i)
+            local pos_embedding_fw  = self.pos_embedding_fw:forward(pos)
+            local pos_embedding_bw  = self.pos_embedding_bw:forward(pos)
+            local cnn_output = cnn_output_list[i] --1, imgW, 512
+            source = cnn_output:transpose(1,2) -- imgW,1,512
+            -- forward encoder
+            local rnn_state_enc = reset_state(self.init_fwd_enc, batch_size, 0)
+            for l = 1, self.encoder_num_layers do
+                rnn_state_enc[0][l*2-1]:copy(pos_embedding_fw[{{},{(l*2-2)*self.encoder_num_hidden+1, (l*2-1)*self.encoder_num_hidden}}])
+                rnn_state_enc[0][l*2]:copy(pos_embedding_fw[{{},{(l*2-1)*self.encoder_num_hidden+1, (l*2)*self.encoder_num_hidden}}])
+            end
+            for t = 1, source_l do
+                counter = (i-1)*source_l + t
+                if forward_only then
+                    self.encoder_fw_clones[t]:evaluate()
+                end
+                local encoder_input = {source[t], table.unpack(rnn_state_enc[t-1])}
+                local out = self.encoder_fw_clones[t]:forward(encoder_input)
+                rnn_state_enc[t] = out
+                context[{{},counter, {1, self.encoder_num_hidden}}]:copy(out[#out])
+            end
+            local rnn_state_enc_bwd = reset_state(self.init_fwd_enc, batch_size, source_l+1)
+            for l = 1, self.encoder_num_layers do
+                rnn_state_enc_bwd[source_l+1][l*2-1]:copy(pos_embedding_bw[{{},{(l*2-2)*self.encoder_num_hidden+1, (l*2-1)*self.encoder_num_hidden}}])
+                rnn_state_enc_bwd[source_l+1][l*2]:copy(pos_embedding_bw[{{},{(l*2-1)*self.encoder_num_hidden+1, (l*2)*self.encoder_num_hidden}}])
+            end
+            for t = source_l, 1, -1 do
+                counter = (i-1)*source_l + t
+                if forward_only then
+                    self.encoder_bw_clones[t]:evaluate()
+                end
+                local encoder_input = {source[t], table.unpack(rnn_state_enc_bwd[t+1])}
+                local out = self.encoder_bw_clones[t]:forward(encoder_input)
+                rnn_state_enc_bwd[t] = out
+                context[{{},counter, {1+self.encoder_num_hidden, 2*self.encoder_num_hidden}}]:copy(out[#out])
+            end
+        end
+        local preds = {}
+        local indices
+        local rnn_state_dec
+        -- forward_only == true, beam search
+        if forward_only then
+            local beam_replicate = function(hidden_state)
+                if hidden_state:dim() == 1 then
+                    local batch_size = hidden_state:size()[1]
+                    if not hidden_state:isContiguous() then
+                        hidden_state = hidden_state:contiguous()
+                    end
+                    local temp_state = hidden_state:view(batch_size, 1):expand(batch_size, beam_size)
+                    if not temp_state:isContiguous() then
+                        temp_state = temp_state:contiguous()
+                    end
+                    return temp_state:view(-1)
+                elseif hidden_state:dim() == 2 then
+                    local batch_size = hidden_state:size()[1]
+                    local num_hidden = hidden_state:size()[2]
+                    if not hidden_state:isContiguous() then
+                        hidden_state = hidden_state:contiguous()
+                    end
+                    local temp_state = hidden_state:view(batch_size, 1, num_hidden):expand(batch_size, beam_size, num_hidden)
+                    if not temp_state:isContiguous() then
+                        temp_state = temp_state:contiguous()
+                    end
+                    return temp_state:view(batch_size*beam_size, num_hidden)
+                elseif hidden_state:dim() == 3 then
+                    local batch_size = hidden_state:size()[1]
+                    local source_l = hidden_state:size()[2]
+                    local num_hidden = hidden_state:size()[3]
+                    if not hidden_state:isContiguous() then
+                        hidden_state = hidden_state:contiguous()
+                    end
+                    local temp_state = hidden_state:view(batch_size, 1, source_l, num_hidden):expand(batch_size, beam_size, source_l, num_hidden)
+                    if not temp_state:isContiguous() then
+                        temp_state = temp_state:contiguous()
+                    end
+                    return temp_state:view(batch_size*beam_size, source_l, num_hidden)
+                else
+                    assert(false, 'does not support ndim except for 2 and 3')
+                end
+            end
+            rnn_state_dec = reset_state(self.beam_init_fwd_dec, batch_size, 0)
+            --local L = self.encoder_num_layers
+            --if self.input_feed then
+            --    rnn_state_dec[0][1*2-1+1]:copy((torch.cat(rnn_state_enc[source_l][L*2-1], rnn_state_enc_bwd[1][L*2-1])))
+            --    rnn_state_dec[0][1*2+1]:copy((torch.cat(rnn_state_enc[source_l][L*2], rnn_state_enc_bwd[1][L*2])))
+            --else
+            --    rnn_state_dec[0][1*2-1+0]:copy((torch.cat(rnn_state_enc[source_l][L*2-1], rnn_state_enc_bwd[1][L*2-1])))
+            --    rnn_state_dec[0][1*2+0]:copy((torch.cat(rnn_state_enc[source_l][L*2], rnn_state_enc_bwd[1][L*2])))
+            --end
+            --for L = 2, self.decoder_num_layers do
+            --    rnn_state_dec[0][L*2-1+0]:zero()
+            --    rnn_state_dec[0][L*2+0]:zero()
+            --end
+            local beam_context = beam_replicate(context)
+            local decoder_input
+            local beam_input
+            for t = 1, target_l do
+                self.decoder_clones[t]:evaluate()
+                if t == 1 then
+                    -- self.trie_locations
+                    if trie ~= nil then
+                        for b = 1, batch_size do
+                            if self.trie_locations[b] == nil then
+                                self.trie_locations[b] = {}
+                            end
+                            self.trie_locations[b] = trie[2]
+                        end
+                    end
+                    beam_input = target[t]
+                    decoder_input = {beam_input, context, table.unpack(rnn_state_dec[t-1])}
+                else
+                    decoder_input = {beam_input, beam_context, table.unpack(rnn_state_dec[t-1])}
+                end
+                local out = self.decoder_clones[t]:forward(decoder_input)
+                local next_state = {}
+                local top_out = out[#out]
+                local probs = self.output_projector:forward(top_out) -- t~=0, batch_size*beam_size, vocab_size; t=0, batch_size,vocab_size
+                local current_indices, raw_indices
+                local beam_parents
+                if t == 1 then
+                    -- probs batch_size, vocab_size
+                    if trie == nil then
+                        self.beam_scores, raw_indices = probs:topk(beam_size, true)
+                        raw_indices = localize(raw_indices:double())
+                        current_indices = raw_indices
+                    else
+                        self.beam_scores:zero()
+                        raw_indices = localize(torch.zeros(batch_size, beam_size))
+                        local _, i = probs:sort(2, true)
+                        for b = 1, batch_size do
+                            local num_beam = 0
+                            for vocab = 1, self.target_vocab_size do
+                                if num_beam ~= beam_size then
+                                    local vocab_id = i[b][vocab]
+                                    if self.trie_locations[b][vocab_id] ~= nil then
+                                        num_beam = num_beam + 1
+                                        raw_indices[b][num_beam] = vocab_id
+                                        self.beam_scores[b][num_beam] = probs[b][vocab_id]
+                                    end
+                                end
+                            end
+                            if num_beam ~= beam_size then
+                                log(string.format('Warning: valid beam size: %d', num_beam))
+                                local vocab_id = nil
+                                for vocab = 1, self.target_vocab_size do
+                                    if vocab_id == nil then
+                                        local vocab_id_tmp = i[b][vocab]
+                                        if self.trie_locations[b][vocab_id_tmp] ~= nil then
+                                            vocab_id = vocab_id_tmp
+                                        end
+                                    end
+                                end
+                                for beam = num_beam+1, beam_size do
+                                    raw_indices[b][beam] = vocab_id
+                                    self.beam_scores[b][beam] = probs[b][vocab_id]
+                                end
+                            end
+                            local trie_locations = {}
+                            for beam = 1, beam_size do
+                                local vocab_id = raw_indices[b][beam]
+                                trie_locations[beam] = self.trie_locations[b][vocab_id]
+                            end
+                            self.trie_locations[b] = trie_locations
+                        end
+                        current_indices = raw_indices
+                    end
+                else
+                    -- batch_size*beam_size, vocab_size
+                    probs:select(2,1):maskedFill(beam_input:eq(1), 0) -- once padding or EOS encountered, stuck at that point
+                    probs:select(2,1):maskedFill(beam_input:eq(3), 0)
+                    local total_scores = (probs:view(batch_size, beam_size, self.target_vocab_size) + self.beam_scores[{{1,batch_size}, {}}]:view(batch_size, beam_size, 1):expand(batch_size, beam_size, self.target_vocab_size)):view(batch_size, beam_size*self.target_vocab_size) -- batch_size, beam_size * target_vocab_size
+                    if trie == nil then
+                        self.beam_scores, raw_indices = total_scores:topk(beam_size, true) --batch_size, beam_size
+                        raw_indices = localize(raw_indices:double())
+                        raw_indices:add(-1)
+                        if use_cuda then
+                            current_indices = raw_indices:double():fmod(self.target_vocab_size):cuda()+1 -- batch_size, beam_size for current vocab
+                        else
+                            current_indices = raw_indices:fmod(self.target_vocab_size)+1 -- batch_size, beam_size for current vocab
+                        end
+                    else
+                        raw_indices = localize(torch.zeros(batch_size, beam_size))
+                        current_indices = localize(torch.zeros(batch_size, beam_size))
+                        local _, i = total_scores:sort(2, true) -- batch_size, beam_size*target_size
+                        for b = 1, batch_size do
+                            local num_beam = 0
+                            for beam_vocab = 1, beam_size*self.target_vocab_size do
+                                if num_beam ~= beam_size then
+                                    local beam_vocab_id = i[b][beam_vocab]
+                                    local vocab_id = (beam_vocab_id-1) % self.target_vocab_size + 1
+                                    local beam_id = math.floor((beam_vocab_id-1) / self.target_vocab_size)+1 -- batch_size, beam_size for number of beam in each batch
+                                    if vocab_id == 1 or self.trie_locations[b][beam_id][vocab_id] ~= nil then
+                                        num_beam = num_beam + 1
+                                        current_indices[b][num_beam] = vocab_id
+                                        raw_indices[b][num_beam] = beam_vocab_id-1
+                                        self.beam_scores[b][num_beam] = total_scores[b][beam_vocab_id]
+                                    end
+                                end
+                            end
+                            if num_beam ~= beam_size then
+                                log(string.format('Warning: valid beam size: %d', num_beam))
+                                local beam_vocab_id = nil
+                                for beam_vocab = 1, beam_size*self.target_vocab_size do
+                                    if beam_vocab_id == nil then
+                                        local beam_vocab_id_tmp = i[b][beam_vocab]
+                                        local vocab_id = (beam_vocab_id_tmp-1) % self.target_vocab_size + 1
+                                        local beam_id = math.floor((beam_vocab_id_tmp-1) / self.target_vocab_size)+1 -- batch_size, beam_size for number of beam in each batch
+                                        if vocab_id == 1 or self.trie_locations[b][vocab_id_tmp] ~= nil then
+                                            beam_vocab_id = vocab_id_tmp
+                                        end
+                                    end
+                                end
+                                for beam = num_beam+1, beam_size do
+                                    local vocab_id = (beam_vocab_id-1) % self.target_vocab_size + 1
+                                    local beam_id = ((beam_vocab_id-1) / self.target_vocab_size):floor()+1 -- batch_size, beam_size for number of beam in each batch
+                                    current_indices[b][beam] = vocab_id
+                                    raw_indices[b][beam] = beam_vocab_id-1
+                                    self.beam_scores[b][beam] = total_scores[b][beam_vocab_id]
+                                end
+                            end
+                            local trie_locations = {}
+                            for beam = 1, beam_size do
+                                local beam_vocab_id = raw_indices[b][beam]
+                                local beam_id = math.floor((beam_vocab_id) / self.target_vocab_size)+1 -- batch_size, beam_size for number of beam in each batch
+                                local vocab_id = (beam_vocab_id) % self.target_vocab_size + 1
+                                if vocab_id == 1 then
+                                    trie_locations[beam] = self.trie_locations[b][beam_id]
+                                else
+                                    trie_locations[beam] = self.trie_locations[b][beam_id][vocab_id]
+                                end
+                            end
+                            self.trie_locations[b] = trie_locations
+                        end
+
+                    end
+                end
+                beam_parents = localize(raw_indices:int()/self.target_vocab_size+1) -- batch_size, beam_size for number of beam in each batch
+                beam_input = current_indices:view(batch_size*beam_size)
+                table.insert(self.current_indices_history, current_indices:clone())
+                table.insert(self.beam_parents_history, beam_parents:clone())
+
+                if self.input_feed then
+                    local top_out = out[#out] -- batch_size*beam_size, hidden_dim
+                    if t == 1 then
+                        top_out = beam_replicate(top_out)
+                    end
+                    table.insert(next_state, top_out:index(1, beam_parents:view(-1)+localize(torch.range(0,(batch_size-1)*beam_size,beam_size):long()):contiguous():view(batch_size,1):expand(batch_size,beam_size):contiguous():view(-1)))
+                end
+                for j = 1, #out-1 do
+                    local out_j = out[j] -- batch_size*beam_size, hidden_dim
+                    if t == 1 then
+                        out_j = beam_replicate(out_j)
+                    end
+                    table.insert(next_state, out_j:index(1, beam_parents:view(-1)+localize(torch.range(0,(batch_size-1)*beam_size,beam_size):long()):contiguous():view(batch_size,1):expand(batch_size,beam_size):contiguous():view(-1)))
+                end
+                rnn_state_dec[t] = next_state
+            end
+        end
+        local loss, accuracy, grads = 0.0, 0.0, 0.0
+        if forward_only then
+            -- final decoding
+            local labels = localize(torch.zeros(batch_size, target_l)):fill(1)
+            local scores, indices = torch.max(self.beam_scores[{{1,batch_size},{}}], 2) -- batch_size, 1
+            indices = localize(indices:double())
+            scores = scores:view(-1) -- batch_size
+            indices = indices:view(-1) -- batch_size
+            local current_indices = self.current_indices_history[#self.current_indices_history]:view(-1):index(1,indices+localize(torch.range(0,(batch_size-1)*beam_size, beam_size):long())) --batch_size
+            for t = target_l, 1, -1 do
+                labels[{{1,batch_size}, t}]:copy(current_indices)
+                indices = self.beam_parents_history[t]:view(-1):index(1,indices+localize(torch.range(0,(batch_size-1)*beam_size, beam_size):long())) --batch_size
+                if t > 1 then
+                    current_indices = self.current_indices_history[t-1]:view(-1):index(1,indices+localize(torch.range(0,(batch_size-1)*beam_size, beam_size):long())) --batch_size
+                end
+            end
+            local word_err, labels_pred, labels_gold, labels_list_pred, labels_list_gold = evalHTMLErrRate(labels, target_eval_batch, self.visualize)
+            accuracy = batch_size - word_err
+
+            rnn_state_dec = reset_state(self.init_fwd_dec, batch_size, 0)
+            local gold_scores = localize(torch.zeros(batch_size))
+            for t = 1, target_l do
+                self.decoder_clones[t]:evaluate()
+                local decoder_input
+                decoder_input = {target[t], context, table.unpack(rnn_state_dec[t-1])}
+                local out = self.decoder_clones[t]:forward(decoder_input)
+                local next_state = {}
+                local pred = self.output_projector:forward(out[#out]) --batch_size, vocab_size
+                loss = loss + self.criterion:forward(pred, target_eval[t])/batch_size
+                grads = grads + self.criterion:backward(pred, target_eval[t])
+
+                if self.input_feed then
+                    table.insert(next_state, out[#out])
+                end
+                for j = 1, #out-1 do
+                    table.insert(next_state, out[j])
+                end
+                rnn_state_dec[t] = next_state
+            end
+
+        end
+        return loss, self.grad_params, {num_nonzeros, accuracy}
+    end
+    local optim_state = self.optim_state
+    if not forward_only then
+        local _, loss, stats = optim.sgd_list(feval, self.params, optim_state); loss = loss[1]
+        return loss*batch_size, stats
+    else
+        local loss, _, stats = feval(self.params)
+        return loss*batch_size, stats -- todo: accuracy
+    end
+end
