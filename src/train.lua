@@ -197,6 +197,57 @@ function train(model, phase, batch_size, num_epochs, train_data, val_data, model
     end -- for epoch
 end
 
+
+function adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at)
+    local loss = 0
+    local num_seen = 0
+    local num_samples = 0
+    local num_nonzeros = 0
+    local accuracy = 0
+    local forward_only
+    local learning_rate = model.optim_state.learningRate or learning_rate_init
+    learning_rate = math.max(learning_rate, opt.learning_rate_min)
+    model.optim_state.learningRate = learning_rate
+    logging:info(string.format('Lr: %f', learning_rate))
+    if visualize then
+        model:vis(output_dir)
+    end
+    forward_only = true
+    num_epochs = 1
+    model.global_step = 0
+
+    local prev_loss = nil
+    local val_losses = {}
+    for epoch = 1, num_epochs do
+        if epoch >= start_decay_at and learning_rate > opt.learning_rate_min then
+            learning_rate = learning_rate*lr_decay
+            model.optim_state.learningRate = math.max(learning_rate, opt.learning_rate_min)
+            logging:info(string.format('Decay lr, current lr: %f', learning_rate))
+        end
+        while true do
+            train_batch = train_data:nextBatch(batch_size)
+            if train_batch == nil then
+                break
+            end
+            local real_batch_size = train_batch[1]:size()[1]
+            local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie)
+            logging:info(string.format('%f', math.exp(step_loss/stats[1])))
+            num_seen = num_seen + 1
+            num_samples = num_samples + real_batch_size
+            num_nonzeros = num_nonzeros + stats[1]
+            accuracy = accuracy + stats[2]
+            loss = loss + step_loss
+
+            model.global_step = model.global_step + 1
+            if model.global_step % steps_per_checkpoint == 0 then
+                logging:info(string.format('Number of samples %d - Accuracy = %f', num_samples, accuracy/num_samples))
+            end
+        end -- while true
+        logging:info(string.format('Epoch: %d Number of samples %d - Accuracy = %f Perp = %f', epoch, num_samples, accuracy/num_samples, math.exp(loss/num_nonzeros)))
+    end -- for epoch
+end
+
+
 function main()
     logging = logger(opt.log_path)
     logging:info('Command Line Arguments:')
@@ -286,8 +337,8 @@ function main()
         logging:info(string.format('Load dictionary from %s', opt.dictionary_path))
         trie = loadDictionary(opt.dictionary_path, opt.allow_digit_prefix)
     end
-    train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at)
-
+    -- train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at)
+    adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at)
     logging:shutdown()
     model:shutdown()
 end
