@@ -198,7 +198,7 @@ function train(model, phase, batch_size, num_epochs, train_data, val_data, model
 end
 
 
-function adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at)
+function adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at, data_path)
     local loss = 0
     local num_seen = 0
     local num_samples = 0
@@ -216,6 +216,8 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
     num_epochs = 1
     model.global_step = 0
 
+    initialize_adversarial_perturbations(data_path)
+
     local prev_loss = nil
     local val_losses = {}
     for epoch = 1, num_epochs do
@@ -230,7 +232,7 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
                 break
             end
             local real_batch_size = train_batch[1]:size()[1]
-            local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie)
+            local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie, data_path)
             logging:info(string.format('%f', math.exp(step_loss/stats[1])))
             num_seen = num_seen + 1
             num_samples = num_samples + real_batch_size
@@ -338,7 +340,7 @@ function main()
         trie = loadDictionary(opt.dictionary_path, opt.allow_digit_prefix)
     end
     -- train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at)
-    adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at)
+    adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.data_path)
     logging:shutdown()
     model:shutdown()
 end

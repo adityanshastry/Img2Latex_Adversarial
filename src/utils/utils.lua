@@ -214,3 +214,50 @@ function evalHTMLErrRate(labels, target_labels, visualize)
     end
     return word_error_rate, labels_pred, labels_gold, labels_list_pred, labels_list_gold
 end
+
+
+function slice(tbl, first, last, step)
+  local sliced = {}
+
+  for i = first or 1, last or #tbl, step or 1 do
+    sliced[#sliced+1] = tbl[i]
+  end
+
+  return sliced
+end
+
+
+function initialize_adversarial_perturbations(data_path)
+    local file = io.open(data_path)
+    local data_path_components = data_path:split("/")
+    local file_name_from_data_path = data_path_components[#data_path_components]
+    local data_directory = table.concat({table.concat(slice(data_path_components, 1, #data_path_components-1), "/"), "adversarial_perturbations"}, "/")
+    
+    local perturbed_images_path = {}
+
+    if file then
+        for line in file:lines() do
+            image_name, _ = unpack(line:split(" "))
+            image_title = image_name:sub(1, #image_name-5)
+            print (image_title)
+            perturbed_image_path = "/"..data_directory.."/"..image_title..".csv"
+            print (perturbed_image_path)
+            perturbed_image_file = io.open(perturbed_image_path, "w")
+            perturbed_image_file:close()
+
+        end
+    else
+        -- exception case
+    end
+
+end
+
+
+
+
+
+
+
+
+
+
