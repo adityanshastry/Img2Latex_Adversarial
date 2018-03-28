@@ -239,9 +239,7 @@ function initialize_adversarial_perturbations(data_path)
         for line in file:lines() do
             image_name, _ = unpack(line:split(" "))
             image_title = image_name:sub(1, #image_name-5)
-            print (image_title)
             perturbed_image_path = "/"..data_directory.."/"..image_title..".csv"
-            print (perturbed_image_path)
             perturbed_image_file = io.open(perturbed_image_path, "w")
             perturbed_image_file:close()
 
