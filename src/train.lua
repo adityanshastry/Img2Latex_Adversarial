@@ -213,14 +213,16 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
         model:vis(output_dir)
     end
     forward_only = true
-    num_epochs = 1
+    num_epochs = 2
     model.global_step = 0
 
+    logging:info('Initializing Adversarial Perturbations')
     initialize_adversarial_perturbations(data_path)
 
     local prev_loss = nil
     local val_losses = {}
     for epoch = 1, num_epochs do
+        logging:info(string.format('Epoch %d', epoch))
         if epoch >= start_decay_at and learning_rate > opt.learning_rate_min then
             learning_rate = learning_rate*lr_decay
             model.optim_state.learningRate = math.max(learning_rate, opt.learning_rate_min)
@@ -232,7 +234,7 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
                 break
             end
             local real_batch_size = train_batch[1]:size()[1]
-            local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie, data_path)
+            local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie, data_path, learning_rate)
             logging:info(string.format('%f', math.exp(step_loss/stats[1])))
             num_seen = num_seen + 1
             num_samples = num_samples + real_batch_size
