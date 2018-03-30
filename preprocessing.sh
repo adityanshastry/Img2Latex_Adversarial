@@ -30,6 +30,8 @@ if [ "${#DATAPATH}" -eq "0" ]; then
         exit 1
 fi
 
+mkdir ${DATAPATH}/adversarial_perturbations
+
 python scripts/preprocessing/preprocess_images.py --input-dir ${DATAPATH}/images --output-dir ${DATAPATH}/images_processed
 
 python scripts/preprocessing/preprocess_formulas.py --mode normalize --input-file ${DATAPATH}/formulas.lst --output-file ${DATAPATH}/formulas.norm.lst
