@@ -227,19 +227,25 @@ function slice(tbl, first, last, step)
 end
 
 
-function initialize_adversarial_perturbations(data_path)
-    local file = io.open(data_path)
+function get_data_directory_from_path(data_path)
+
     local data_path_components = data_path:split("/")
     local file_name_from_data_path = data_path_components[#data_path_components]
-    local data_directory = table.concat({table.concat(slice(data_path_components, 1, #data_path_components-1), "/"), "adversarial_perturbations"}, "/")
-    
+    return "/"..table.concat(slice(data_path_components, 1, #data_path_components-1), "/")
+
+end
+
+
+function initialize_adversarial_perturbations(data_path)
+    local file = io.open(data_path)
+    local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
     local perturbed_images_path = {}
 
     if file then
         for line in file:lines() do
             image_name, _ = unpack(line:split(" "))
-            image_title = image_name:sub(1, #image_name-5)
-            perturbed_image_path = "/"..data_directory.."/"..image_title..".csv"
+            image_title = image_name:sub(1, #image_name-4)
+            perturbed_image_path = adversarial_perturbations_data_directory..image_title..".csv"
             perturbed_image_file = io.open(perturbed_image_path, "w")
             perturbed_image_file:close()
 
@@ -250,6 +256,79 @@ function initialize_adversarial_perturbations(data_path)
 
 end
 
+
+function get_file_size(file)
+    local current = file:seek()
+    local size = file:seek("end")
+    file:seek("set", current)
+    return size
+end
+
+
+
+function get_adversarial_perturbations_from_path(adversarial_perturbations_file_name, adversarial_perturbation)
+
+    local adversarial_perturbations_file = io.open(adversarial_perturbations_file_name, "r")
+    local adversarial_perturbations_file_size = get_file_size(adversarial_perturbations_file)
+    if adversarial_perturbations_file_size ~= 0 then
+        local i = 0
+        for line in adversarial_perturbations_file:lines('*l') do
+            i = i + 1
+            local l = line:split(',')
+            for key, val in ipairs(l) do
+                adversarial_perturbation[i][key] = val
+            end
+        end
+    end
+
+    adversarial_perturbations_file.close()
+    return adversarial_perturbation
+
+end
+
+
+function load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path)
+
+    local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
+
+    for file_name_index = 1, #adversarial_perturbations_file_names do
+        local image_name = adversarial_perturbations_file_names[file_name_index]
+        local image_title = image_name:sub(1, #image_name-4)
+        local adversarial_perturbations_file_name = adversarial_perturbations_data_directory..image_title..".csv"
+        adversarial_perturbations[file_name_index][1] = get_adversarial_perturbations_from_path(adversarial_perturbations_file_name, adversarial_perturbations[file_name_index][1]):clone()
+    end
+
+    return adversarial_perturbations
+
+end
+
+
+function save_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path)
+
+    local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
+    local adversarial_perturbations_size = adversarial_perturbations:size()
+    
+    for file_name_index = 1, #adversarial_perturbations_file_names do
+        local image_name = adversarial_perturbations_file_names[file_name_index]
+        local image_title = image_name:sub(1, #image_name-4)
+        local adversarial_perturbations_file_name = adversarial_perturbations_data_directory..image_title..".csv"
+
+        local adversarial_perturbations_file = io.open(adversarial_perturbations_file_name, "w")
+
+        splitter = ","
+        for i=1, adversarial_perturbations_size[3] do
+            for j=1, adversarial_perturbations_size[4] do
+                adversarial_perturbations_file:write(adversarial_perturbations[file_name_index][1][i][j])
+                if j == adversarial_perturbations_size[4] then
+                    adversarial_perturbations_file:write("\n")
+                else
+                    adversarial_perturbations_file:write(splitter)
+                end
+            end
+        end
+    end
+
+end
 
 
 
