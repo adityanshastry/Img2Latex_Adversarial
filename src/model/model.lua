@@ -946,7 +946,7 @@ end
 
 
 -- one adversarial step 
-function model:adversarial_step(batch, forward_only, beam_size, trie)
+function model:adversarial_step(batch, forward_only, beam_size, trie, data_path, learning_rate)
 
     self.val_batch_size = self.batch_size
     beam_size = beam_size or 1 -- default argmax
@@ -978,6 +978,13 @@ function model:adversarial_step(batch, forward_only, beam_size, trie)
     local target_eval_batch = localize(batch[3])
     local num_nonzeros = batch[4]
     local img_paths
+
+    local adversarial_perturbations_file_names = batch[5]
+    local adversarial_perturbations = torch.Tensor(input_batch:size()):zero()
+    adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path))
+
+    input_batch:add(adversarial_perturbations)
+
     if self.visualize then
         img_paths = batch[5]
     end
@@ -1092,7 +1099,7 @@ function model:adversarial_step(batch, forward_only, beam_size, trie)
 
         rnn_state_dec = reset_state(self.init_fwd_dec, batch_size, 0)
         for t = 1, target_l do
-            self.decoder_clones[t]:training()
+            self.decoder_clones[t]:evaluate()
             local decoder_input
             decoder_input = {target[t], context, table.unpack(rnn_state_dec[t-1])}
             local out = self.decoder_clones[t]:forward(decoder_input)
@@ -1224,8 +1231,10 @@ function model:adversarial_step(batch, forward_only, beam_size, trie)
             cnn_final_grad[i] = cnn_final_grad[i]:contiguous():view(batch_size, source_l, -1)
         end
         local update_grads = self.cnn_model:backward(input_batch, cnn_final_grad)
-        print (input_batch:size())
-        print (update_grads:size())
+
+        adversarial_perturbations:add(learning_rate, update_grads)
+        save_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path)
+
         collectgarbage()
 
         return loss, self.grad_params, {num_nonzeros, accuracy}
