@@ -64,11 +64,14 @@ cmd:option('-max_image_width', 500, [[Maximum length of input feature sequence a
 cmd:option('-max_image_height', 160, [[Maximum length of input feature sequence along width direction]]) --80 / (2*2*2)
 cmd:option('-prealloc', false, [[Use memory preallocation and sharing between cloned encoder/decoders]])
 
+-- Test perturbations
+cmd:option('-perturbations', false, [[Whether or not to use perturbations during model testing]])
+
 opt = cmd:parse(arg)
 torch.manualSeed(opt.seed)
 math.randomseed(opt.seed)
 
-function train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at)
+function train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at, perturbations, data_path)
     local loss = 0
     local num_seen = 0
     local num_samples = 0
@@ -108,7 +111,7 @@ function train(model, phase, batch_size, num_epochs, train_data, val_data, model
                 break
             end
             local real_batch_size = train_batch[1]:size()[1]
-            local step_loss, stats = model:step(train_batch, forward_only, beam_size, trie)
+            local step_loss, stats = model:step(train_batch, forward_only, beam_size, trie, perturbations, data_path)
             logging:info(string.format('%f', math.exp(step_loss/stats[1])))
             num_seen = num_seen + 1
             num_samples = num_samples + real_batch_size
@@ -205,15 +208,14 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
     local num_nonzeros = 0
     local accuracy = 0
     local forward_only
-    local learning_rate = model.optim_state.learningRate or learning_rate_init
+    local learning_rate = learning_rate_init
     learning_rate = math.max(learning_rate, opt.learning_rate_min)
     model.optim_state.learningRate = learning_rate
-    logging:info(string.format('Lr: %f', learning_rate))
+    logging:info(string.format('Learning Rate: %f', learning_rate))
     if visualize then
         model:vis(output_dir)
     end
     forward_only = true
-    num_epochs = 2
     model.global_step = 0
 
     logging:info('Initializing Adversarial Perturbations')
@@ -235,7 +237,7 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
             end
             local real_batch_size = train_batch[1]:size()[1]
             local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie, data_path, learning_rate)
-            logging:info(string.format('%f', math.exp(step_loss/stats[1])))
+            -- logging:info(string.format('%f', math.exp(step_loss/stats[1])))
             num_seen = num_seen + 1
             num_samples = num_samples + real_batch_size
             num_nonzeros = num_nonzeros + stats[1]
@@ -341,8 +343,11 @@ function main()
         logging:info(string.format('Load dictionary from %s', opt.dictionary_path))
         trie = loadDictionary(opt.dictionary_path, opt.allow_digit_prefix)
     end
-    -- train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at)
-    adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.data_path)
+    if phase == 'train' or phase == 'test' then
+        train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.perturbations, opt.data_path)
+    elseif phase == 'adversarial' then
+        adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.data_path)
+    end
     logging:shutdown()
     model:shutdown()
 end

@@ -251,7 +251,7 @@ end
 
 
 -- one step 
-function model:step(batch, forward_only, beam_size, trie)
+function model:step(batch, forward_only, beam_size, trie, perturbations)
     if forward_only then
         self.val_batch_size = self.batch_size
         beam_size = beam_size or 1 -- default argmax
@@ -296,6 +296,13 @@ function model:step(batch, forward_only, beam_size, trie)
     local img_paths
     if self.visualize then
         img_paths = batch[5]
+    end
+
+    if perturbations then
+        local adversarial_perturbations_file_names = batch[5]
+        local adversarial_perturbations = torch.Tensor(input_batch:size()):zero()
+        adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path))
+        input_batch:add(adversarial_perturbations)
     end
 
     local batch_size = input_batch:size()[1]
