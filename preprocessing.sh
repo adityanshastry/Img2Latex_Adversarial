@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#!/bin/bash
-
 POSITIONAL=()
 while [[ $# -gt 0 ]]
 do
