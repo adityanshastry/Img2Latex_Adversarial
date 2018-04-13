@@ -230,8 +230,16 @@ end
 function get_data_directory_from_path(data_path)
 
     local data_path_components = data_path:split("/")
-    local file_name_from_data_path = data_path_components[#data_path_components]
     return "/"..table.concat(slice(data_path_components, 1, #data_path_components-1), "/")
+
+end
+
+
+function backup_adversarial_perturbations_for_epoch(data_path, epoch)
+
+    local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
+    local backup_adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations_"..tostring(epoch).."/"
+    os.execute(string.format("cp -R %s %s", adversarial_perturbations_data_directory, backup_adversarial_perturbations_data_directory))
 
 end
 
@@ -263,7 +271,6 @@ function get_file_size(file)
     file:seek("set", current)
     return size
 end
-
 
 
 function get_adversarial_perturbations_from_path(adversarial_perturbations_file_name, adversarial_perturbation)
@@ -331,9 +338,95 @@ function save_adversarial_perturbations(adversarial_perturbations_file_names, ad
 end
 
 
+function initialize_adversarial_tensors_dictionary(data_path)
+
+    local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
+
+    for file_name_index = 1, #adversarial_perturbations_file_names do
+        local image_name = adversarial_perturbations_file_names[file_name_index]
+        local image_title = image_name:sub(1, #image_name-4)
+        local adversarial_perturbations_file_name = adversarial_perturbations_data_directory..image_title..".csv"
+        adversarial_perturbations[file_name_index][1] = get_adversarial_perturbations_from_path(adversarial_perturbations_file_name, adversarial_perturbations[file_name_index][1]):clone()
+    end
 
 
+    local file = io.open(data_path)
+    adversarial_perturbations_dict = {}
 
+    if file then
+        for line in file:lines() do
+            image_name, _ = unpack(line:split(" "))
+            adversarial_perturbations_dict[image_name] = nil
+            local image_title = image_name:sub(1, #image_name-4)
+            local adversarial_perturbations_file_name = adversarial_perturbations_data_directory..image_title..".csv"
+            local adversarial_perturbations_file = io.open(adversarial_perturbations_file_name, "r")
+
+
+        end
+    else
+        -- exception case
+    end
+
+    return adversarial_perturbations_dict
+
+end
+
+
+function get_adversarial_tensors_from_images(image_names, batch_tensor_size, adversarial_perturbations_dict)
+    
+    local adversarial_perturbations_tensor = torch.Tensor(batch_tensor_size):zero()
+    print (#image_names)
+    print (batch_tensor_size)
+
+    for image_index = 1, #image_names do
+        local image_name = image_names[image_index]
+        if adversarial_perturbations_dict[image_name] == nil then
+            adversarial_perturbations_dict[image_name] = torch.Tensor(batch_tensor_size[3], batch_tensor_size[4]):zero()
+        else
+            adversarial_perturbations_tensor[image_index][1] = adversarial_perturbations_dict[image_name]:clone()
+        end
+    end
+
+    return adversarial_perturbations_tensor
+
+end
+
+
+function update_adversarial_perturbations_dict(image_names, adversarial_perturbations, adversarial_perturbations_dict)
+
+    for image_index = 1, #image_names do
+        local image_name = image_names[image_index]
+        adversarial_perturbations_dict[image_name] = adversarial_perturbations[image_index][1]:clone()
+    end
+
+    return adversarial_perturbations_dict
+
+end
+
+
+function save_adversarial_tensors(data_path, adversarial_perturbations_dict)
+
+    local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
+
+    for image_name, adversarial_tensor in pairs(adversarial_perturbations_dict) do
+        local image_title = image_name:sub(1, #image_name-4)
+        local adversarial_perturbations_file_name = adversarial_perturbations_data_directory..image_title..".csv"
+        local adversarial_perturbations_file = io.open(adversarial_perturbations_file_name, "w")
+
+        splitter = ","
+        for i=1, adversarial_tensor:size()[1] do
+            for j=1, adversarial_tensor:size()[2] do
+                adversarial_perturbations_file:write(adversarial_tensor[i][j])
+                if j == adversarial_tensor:size()[2] then
+                    adversarial_perturbations_file:write("\n")
+                else
+                    adversarial_perturbations_file:write(splitter)
+                end
+            end
+        end        
+    end
+
+end
 
 
 

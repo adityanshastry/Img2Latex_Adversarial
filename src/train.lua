@@ -42,7 +42,7 @@ cmd:option('-batch_size', 1, [[Batch size]])
 cmd:option('-learning_rate', 0.1, [[Initial learning rate]])
 cmd:option('-learning_rate_min', 0.00001, [[Initial learning rate]])
 cmd:option('-lr_decay', 0.5, [[Decay learning rate by this much if (i) perplexity does not decrease on the validation set or (ii) epoch has gone past the start_decay_at_limit]])
-cmd:option('-start_decay_at', 999, [[Start decay after this epoch]])
+cmd:option('-start_decay_at', 9999, [[Start decay after this epoch]])
 
 -- Network
 cmd:option('-dropout', 0.0, [[Dropout probability]]) -- does support dropout now!!!
@@ -64,8 +64,10 @@ cmd:option('-max_image_width', 500, [[Maximum length of input feature sequence a
 cmd:option('-max_image_height', 160, [[Maximum length of input feature sequence along width direction]]) --80 / (2*2*2)
 cmd:option('-prealloc', false, [[Use memory preallocation and sharing between cloned encoder/decoders]])
 
--- Test perturbations
+-- perturbations
+cmd:option('-initialize_perturbations', false, [[Whether or not to initialize_perturbations during model training]])
 cmd:option('-perturbations', false, [[Whether or not to use perturbations during model testing]])
+cmd:option('-backup_epochs', 1000, [[At how many epochs to backup the perturbations]])
 
 opt = cmd:parse(arg)
 torch.manualSeed(opt.seed)
@@ -195,13 +197,13 @@ function train(model, phase, batch_size, num_epochs, train_data, val_data, model
             os.execute(string.format('mv %s %s', final_model_path_tmp, final_model_path))
 
         else
-            logging:info(string.format('Epoch: %d Number of samples %d - Accuracy = %f Perp = %f', epoch, num_samples, accuracy/num_samples, math.exp(loss/num_nonzeros)))
+            logging:info(string.format('Epoch: %d, Accuracy = %f, Loss = %f', epoch, accuracy/num_samples, loss/num_nonzeros))
         end
     end -- for epoch
 end
 
 
-function adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at, data_path)
+function adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at, data_path, initialize_perturbations, backup_epochs)
     local loss = 0
     local num_seen = 0
     local num_samples = 0
@@ -218,8 +220,11 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
     forward_only = true
     model.global_step = 0
 
-    logging:info('Initializing Adversarial Perturbations')
-    initialize_adversarial_perturbations(data_path)
+    
+    if initialize_perturbations then
+        logging:info('Initializing Adversarial Perturbations')
+        initialize_adversarial_perturbations(data_path)
+    end
 
     local prev_loss = nil
     local val_losses = {}
@@ -236,7 +241,7 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
                 break
             end
             local real_batch_size = train_batch[1]:size()[1]
-            local step_loss, stats = model:adversarial_step(train_batch, forward_only, beam_size, trie, data_path, learning_rate)
+            local step_loss, stats = model:adversarial_step(train_batch, phase, beam_size, trie, data_path)
             -- logging:info(string.format('%f', math.exp(step_loss/stats[1])))
             num_seen = num_seen + 1
             num_samples = num_samples + real_batch_size
@@ -245,11 +250,13 @@ function adversarial_train(model, phase, batch_size, num_epochs, train_data, val
             loss = loss + step_loss
 
             model.global_step = model.global_step + 1
-            if model.global_step % steps_per_checkpoint == 0 then
-                logging:info(string.format('Number of samples %d - Accuracy = %f', num_samples, accuracy/num_samples))
-            end
         end -- while true
-        logging:info(string.format('Epoch: %d Number of samples %d - Accuracy = %f Perp = %f', epoch, num_samples, accuracy/num_samples, math.exp(loss/num_nonzeros)))
+        logging:info(string.format('Epoch: %d,  Loss = %f', epoch, loss/num_nonzeros))
+
+        if epoch % backup_epochs == 0 then
+            backup_adversarial_perturbations_for_epoch(data_path, epoch)
+        end
+
     end -- for epoch
 end
 
@@ -345,8 +352,8 @@ function main()
     end
     if phase == 'train' or phase == 'test' then
         train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.perturbations, opt.data_path)
-    elseif phase == 'adversarial' then
-        adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.data_path)
+    elseif phase == 'non_targeted_adversarial' or phase == 'targeted_adversarial' then
+        adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.data_path, opt.initialize_perturbations, opt.backup_epochs)
     end
     logging:shutdown()
     model:shutdown()

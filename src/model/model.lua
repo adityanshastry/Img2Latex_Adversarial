@@ -251,7 +251,7 @@ end
 
 
 -- one step 
-function model:step(batch, forward_only, beam_size, trie, perturbations)
+function model:step(batch, forward_only, beam_size, trie, perturbations, data_path)
     if forward_only then
         self.val_batch_size = self.batch_size
         beam_size = beam_size or 1 -- default argmax
@@ -302,7 +302,10 @@ function model:step(batch, forward_only, beam_size, trie, perturbations)
         local adversarial_perturbations_file_names = batch[5]
         local adversarial_perturbations = torch.Tensor(input_batch:size()):zero()
         adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path))
+        --print (adversarial_perturbations[1][1])
+        --print (input_batch[1][1])
         input_batch:add(adversarial_perturbations)
+	--print (input_batch)
     end
 
     local batch_size = input_batch:size()[1]
@@ -953,7 +956,7 @@ end
 
 
 -- one adversarial step 
-function model:adversarial_step(batch, forward_only, beam_size, trie, data_path, learning_rate)
+function model:adversarial_step(batch, adversarial_phase, beam_size, trie, data_path)
 
     self.val_batch_size = self.batch_size
     beam_size = beam_size or 1 -- default argmax
@@ -989,7 +992,8 @@ function model:adversarial_step(batch, forward_only, beam_size, trie, data_path,
     local adversarial_perturbations_file_names = batch[5]
     local adversarial_perturbations = torch.Tensor(input_batch:size()):zero()
     adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path))
-
+    --print (input_batch:size())
+    local input_batch_backup = localize(batch[1])
     input_batch:add(adversarial_perturbations)
 
     if self.visualize then
@@ -1132,8 +1136,14 @@ function model:adversarial_step(batch, forward_only, beam_size, trie, data_path,
         local drnn_state_dec = reset_state(self.init_bwd_dec, batch_size)
         for t = target_l, 1, -1 do
             local pred = self.output_projector:forward(preds[t])
-            loss = loss + self.criterion:forward(pred, target_eval[t])/batch_size
-            local dl_dpred = self.criterion:backward(pred, target_eval[t])
+    	    local pred_labels = target_eval[t]
+            if adversarial_phase == "non_targeted_adversarial" then
+                max_pred, max_pred_indices = torch.max(pred, 2)
+                pred_labels = max_pred_indices:select(2,1)
+            end
+            
+            loss = loss + self.criterion:forward(pred, pred_labels)/batch_size
+            local dl_dpred = self.criterion:backward(pred, pred_labels)
             dl_dpred:div(batch_size)
             local dl_dtarget = self.output_projector:backward(preds[t], dl_dpred)
             drnn_state_dec[#drnn_state_dec]:add(dl_dtarget)
@@ -1144,7 +1154,7 @@ function model:adversarial_step(batch, forward_only, beam_size, trie, data_path,
             drnn_state_dec[#drnn_state_dec]:zero()
             if self.input_feed then
                 drnn_state_dec[#drnn_state_dec]:copy(dlst[3])
-            end     
+            end
             for j = self.dec_offset, #dlst do
                 drnn_state_dec[j-self.dec_offset+1]:copy(dlst[j])
             end
@@ -1237,10 +1247,17 @@ function model:adversarial_step(batch, forward_only, beam_size, trie, data_path,
         for i = 1, #cnn_final_grad do
             cnn_final_grad[i] = cnn_final_grad[i]:contiguous():view(batch_size, source_l, -1)
         end
+        
         local update_grads = self.cnn_model:backward(input_batch, cnn_final_grad)
-
-        adversarial_perturbations:add(learning_rate, update_grads)
-        save_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path)
+        
+        if adversarial_phase == "non_targeted_adversarial" then
+            adversarial_perturbations:add(self.optim_state.learningRate, update_grads)
+        elseif adversarial_phase == "targeted_adversarial" then
+            adversarial_perturbations:add(-1*self.optim_state.learningRate, update_grads)
+        end
+	    
+        local corrected_adversarial_perturbations = torch.clamp(torch.add(input_batch_backup, adversarial_perturbations), 0, 255) - input_batch_backup
+        save_adversarial_perturbations(adversarial_perturbations_file_names, corrected_adversarial_perturbations, data_path)
 
         collectgarbage()
 
