@@ -294,9 +294,12 @@ function get_adversarial_perturbations_from_path(adversarial_perturbations_file_
 end
 
 
-function load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path)
+function load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path, perturbations_epochs)
 
     local adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations/"
+    if perturbations_epochs ~= 0 then
+        adversarial_perturbations_data_directory = get_data_directory_from_path(data_path).."/adversarial_perturbations_"..tostring(perturbations_epochs).."/"
+    end
 
     for file_name_index = 1, #adversarial_perturbations_file_names do
         local image_name = adversarial_perturbations_file_names[file_name_index]

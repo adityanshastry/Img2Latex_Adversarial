@@ -68,12 +68,13 @@ cmd:option('-prealloc', false, [[Use memory preallocation and sharing between cl
 cmd:option('-initialize_perturbations', false, [[Whether or not to initialize_perturbations during model training]])
 cmd:option('-perturbations', false, [[Whether or not to use perturbations during model testing]])
 cmd:option('-backup_epochs', 1000, [[At how many epochs to backup the perturbations]])
+cmd:option('-perturbations_epochs', 0, [[At how many epochs to backup the perturbations]])
 
 opt = cmd:parse(arg)
 torch.manualSeed(opt.seed)
 math.randomseed(opt.seed)
 
-function train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at, perturbations, data_path)
+function train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, learning_rate_init, lr_decay, start_decay_at, perturbations, data_path, perturbations_epochs)
     local loss = 0
     local num_seen = 0
     local num_samples = 0
@@ -87,8 +88,9 @@ function train(model, phase, batch_size, num_epochs, train_data, val_data, model
     if phase == 'train' then
         forward_only = false
     elseif phase == 'test' then
+        logging:info(string.format("Inference on backup epoch %d", perturbations_epochs))
         if visualize then
-            model:vis(output_dir)
+            model:vis(output_dir, perturbations_epochs)
         end
         forward_only = true
         num_epochs = 1
@@ -113,7 +115,7 @@ function train(model, phase, batch_size, num_epochs, train_data, val_data, model
                 break
             end
             local real_batch_size = train_batch[1]:size()[1]
-            local step_loss, stats = model:step(train_batch, forward_only, beam_size, trie, perturbations, data_path)
+            local step_loss, stats = model:step(train_batch, forward_only, beam_size, trie, perturbations, data_path, perturbations_epochs)
             logging:info(string.format('%f', math.exp(step_loss/stats[1])))
             num_seen = num_seen + 1
             num_samples = num_samples + real_batch_size
@@ -351,7 +353,7 @@ function main()
         trie = loadDictionary(opt.dictionary_path, opt.allow_digit_prefix)
     end
     if phase == 'train' or phase == 'test' then
-        train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.perturbations, opt.data_path)
+        train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.perturbations, opt.data_path, opt.perturbations_epochs)
     elseif phase == 'non_targeted_adversarial' or phase == 'targeted_adversarial' then
         adversarial_train(model, phase, batch_size, num_epochs, train_data, val_data, model_dir, steps_per_checkpoint, num_batches_val, beam_size, visualize, output_dir, trie, opt.learning_rate, opt.lr_decay, opt.start_decay_at, opt.data_path, opt.initialize_perturbations, opt.backup_epochs)
     end

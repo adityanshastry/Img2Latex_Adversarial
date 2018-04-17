@@ -251,7 +251,7 @@ end
 
 
 -- one step 
-function model:step(batch, forward_only, beam_size, trie, perturbations, data_path)
+function model:step(batch, forward_only, beam_size, trie, perturbations, data_path, perturbations_epochs)
     if forward_only then
         self.val_batch_size = self.batch_size
         beam_size = beam_size or 1 -- default argmax
@@ -301,11 +301,8 @@ function model:step(batch, forward_only, beam_size, trie, perturbations, data_pa
     if perturbations then
         local adversarial_perturbations_file_names = batch[5]
         local adversarial_perturbations = torch.Tensor(input_batch:size()):zero()
-        adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path))
-        --print (adversarial_perturbations[1][1])
-        --print (input_batch[1][1])
+        adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path, perturbations_epochs))
         input_batch:add(adversarial_perturbations)
-	--print (input_batch)
     end
 
     local batch_size = input_batch:size()[1]
@@ -900,10 +897,10 @@ end
 
 
 -- Set visualize phase
-function model:vis(output_dir)
+function model:vis(output_dir, perturbations_epochs)
     self.visualize = true
-    self.visualize_path = paths.concat(output_dir, 'results.txt')
-    self.visualize_attn_path = paths.concat(output_dir, 'results_attn.txt')
+    self.visualize_path = paths.concat(output_dir, string.format('results_%s.txt', tostring(perturbations_epochs)))
+    self.visualize_attn_path = paths.concat(output_dir, string.format('results_attn_%s.txt', tostring(perturbations_epochs)))
     local file, err = io.open(self.visualize_path, "w")
     local file_attn, err_attn = io.open(self.visualize_attn_path, "w")
     self.visualize_file = file
@@ -991,7 +988,7 @@ function model:adversarial_step(batch, adversarial_phase, beam_size, trie, data_
 
     local adversarial_perturbations_file_names = batch[5]
     local adversarial_perturbations = torch.Tensor(input_batch:size()):zero()
-    adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path))
+    adversarial_perturbations = localize(load_adversarial_perturbations(adversarial_perturbations_file_names, adversarial_perturbations, data_path, 0))
     --print (input_batch:size())
     local input_batch_backup = localize(batch[1])
     input_batch:add(adversarial_perturbations)
