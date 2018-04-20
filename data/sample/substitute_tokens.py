@@ -15,12 +15,12 @@ with open("formulas.norm.lst",'r') as of:
         wf.write(" ".join(tokens)+"\n")
 """
 new_num = 1200
-wf = open("test_filter.lst.new","w")
+wf = open("test_filter_targeted.lst","w")
 with open("test_filter.lst","r") as of:
     for line in of:
-        new_num += 1
+        # new_num += 1
         image, num = line.split()
-        new_line = image+" "+str(new_num)+"\n"
+        new_line = image+" "+str(int(num)+new_num)+"\n"
         wf.write(new_line)
 wf.close()
 
