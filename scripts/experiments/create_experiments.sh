@@ -1,9 +1,9 @@
 #/bin/bash
 
-CODE_SOURCE=/home/ashastry/Img2Latex_Adversarial
-DATA_DIR=/home/ashastry/data/Img2Latex_Adversarial
+CODE_SOURCE=/path/where/source/code/present
+DATA_DIR=/path/where/data/present
 
-EXPERIMENTS_SOURCE=/home/ashastry/experiments/Img2Latex_Adversarial
+EXPERIMENTS_SOURCE=/path/where/experiment/code/should/be/copied
 
 
 while [[ $# -gt 0 ]]
