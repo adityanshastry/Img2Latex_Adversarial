@@ -53,11 +53,11 @@ echo "Creating directories for source and data files"
 mkdir ${EXPERIMENTS_SOURCE}/${EXPERIMENT}
 mkdir -p ${DATA_DIR}/experiments/${EXPERIMENT}/${DATASET}
 
-echo "Copying source and data files"
 cp -R ${CODE_SOURCE}/. ${EXPERIMENTS_SOURCE}/${EXPERIMENT}/
 cp -R ${DATA_DIR}/${DATASET}/. ${DATA_DIR}/experiments/${EXPERIMENT}/${DATASET}/
 
-
+echo "Source files copied to ${EXPERIMENTS_SOURCE}/${EXPERIMENT}/"
+echo "Data files copied to ${DATA_DIR}/experiments/${EXPERIMENT}/${DATASET}/"
 
 
 
