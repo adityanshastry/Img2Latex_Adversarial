@@ -43,11 +43,12 @@ fi
 
 
 
-th src/train.lua -phase adversarial -gpu_id 1 -load_model -model_dir model/latex -visualize \
+th src/train.lua -phase targeted_adversarial -gpu_id 1 -load_model -model_dir model/latex -visualize \
 -data_base_dir ${DATA_DIR}/experiments/${EXPERIMENT}/${DATASET}/images_processed/ \
 -data_path ${DATA_DIR}/experiments/${EXPERIMENT}/${DATASET}/test_filter.lst \
 -label_path ${DATA_DIR}/experiments/${EXPERIMENT}/${DATASET}/formulas.norm.lst \
 -output_dir results \
 -max_num_tokens 500 -max_image_width 800 -max_image_height 800 \
--batch_size 5 -beam_size 5 -num_epochs 50 -learning_rate 0.3 
+-batch_size 5 -beam_size 5 -num_epochs 50 -learning_rate 0.3 \
+-initialize_perturbations -backup_epochs 1000
 
